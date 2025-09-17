@@ -1,23 +1,18 @@
 import os
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, Subset, WeightedRandomSampler
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-import random
 import logging
-import pandas as pd
 import time
 from openai import OpenAI
-import numpy as np
-from sklearn.model_selection import StratifiedKFold
 import re
 
 logging.basicConfig(level=logging.INFO)
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
 
 def get_gpt_label(question: str, answer: str, client: OpenAI) -> int:
     system_prompt = (
@@ -39,9 +34,44 @@ def get_gpt_label(question: str, answer: str, client: OpenAI) -> int:
         else:
             return 1
     except Exception as e:
-        print(f"  - Error calling API: {e}. Retrying in 20 seconds...");
+        print(f"  - Error calling GPT API via proxy: {e}. Retrying in 20 seconds...");
         time.sleep(20);
         return -1
+
+
+
+def get_gemini_label(question: str, answer: str, client: OpenAI) -> int:
+
+    system_prompt = (
+        "You are a precise evaluator. Your task is to determine if a given answer from a language model is a hallucination. "
+        "A 'hallucination' is any information that is factually incorrect, nonsensical, or fabricated. "
+        "Your response must be only one of two words: 'hallucination' or 'not_hallucination'."
+    )
+    user_prompt = f"Question: \"{question}\"\n\nGenerated Answer: \"{answer}\"\n\nIs the answer a hallucination?"
+    try:
+        response = client.chat.completions.create(
+
+            model="gemini-2.5-pro",
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            max_tokens=10,
+            temperature=0.0
+        )
+
+        print("--- Full Gemini API Response ---")
+        print(response.model_dump_json(indent=2))
+        print("------------------------------")
+
+        result_text = response.choices[0].message.content.strip().lower()
+        print(f"  - Gemini Judge: '{result_text}'")
+        if "not_hallucination" in result_text:
+            return 0
+        else:
+            return 1
+    except Exception as e:
+        print(f"  - Error calling Gemini API via proxy: {e}. Retrying in 20 seconds...");
+        time.sleep(20);
+        return -1
+
 
 
 def get_llama_embedding(text: str, model: AutoModelForCausalLM, tokenizer: AutoTokenizer) -> torch.Tensor:
@@ -65,7 +95,9 @@ def generate_and_get_embedding(prompt: str, model: AutoModelForCausalLM, tokeniz
     return generated_text, embedding
 
 
-def create_sample(promptA: str, llm_model: AutoModelForCausalLM, llm_tokenizer: AutoTokenizer, openai_client: OpenAI):
+
+def create_sample(promptA: str, llm_model: AutoModelForCausalLM, llm_tokenizer: AutoTokenizer, openai_client: OpenAI,
+                  gemini_client: OpenAI):
     promptA_star = f"""[INST] ### INSTRUCTIONS:
     You are a highly scrupulous AI fact-checker. Your primary directive is to provide answers that are strictly factual and based on verifiable information. Do not invent, guess, or embellish information.
     Crucially, do not repeat the user's question or these instructions in your response.
@@ -82,10 +114,23 @@ def create_sample(promptA: str, llm_model: AutoModelForCausalLM, llm_tokenizer: 
     [/INST]"""
     answerA, E1 = generate_and_get_embedding(promptA_star, llm_model, llm_tokenizer, max_new_tokens=300)
     print(f"answerA\n:{answerA}")
-    label = get_gpt_label(promptA, answerA, openai_client)
-    print(f"label:{label}")
-    # MODIFICATION: Ensure all return paths have the same number of elements
-    if label == -1: return None, None, None, None
+
+    gpt_label = get_gpt_label(promptA, answerA, openai_client)
+    if gpt_label == -1:
+        print("  - GPT labeling failed. Discarding sample.")
+        return None, None, None, None, None
+
+    gemini_label = get_gemini_label(promptA, answerA, gemini_client)
+    if gemini_label == -1:
+        print("  - Gemini labeling failed. Discarding sample.")
+        return None, None, None, None, None
+
+    if gpt_label != gemini_label:
+        print(f"  - Judges disagree (GPT: {gpt_label}, Gemini: {gemini_label}). Discarding sample.")
+        return None, None, None, None, None
+
+    label = gpt_label
+    print(f"  - Labels agree. Final label: {label}")
 
     promptB = f"""You are a meticulous and cautious fact-checker. Your goal is to reason through the user's question to determine a truthful answer, avoiding common misconceptions.
 Question: "{promptA}"
@@ -136,13 +181,14 @@ Provide your reasoning process as a single, coherent paragraph."""
 
 class HallucinationDataset(Dataset):
     def __init__(self, prompts: list, model: AutoModelForCausalLM, tokenizer: AutoTokenizer,
-                 openai_client: OpenAI, csv_writer=None):
+                 openai_client: OpenAI, gemini_client: OpenAI, csv_writer=None):
         self.samples = []
         for i, p in enumerate(prompts):
             print(f"\n--- Processing sample {i + 1}/{len(prompts)} ---")
             try:
+                answerA, answerB, q_star, features, label = create_sample(p, model, tokenizer, openai_client,
+                                                                          gemini_client)
 
-                answerA, answerB, q_star, features, label = create_sample(p, model, tokenizer, openai_client)
                 if features is not None:
                     self.samples.append((features, label))
                     if csv_writer:

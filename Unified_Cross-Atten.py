@@ -3,22 +3,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, Subset, WeightedRandomSampler
-from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-import random
-import logging
 import pandas as pd
-import time
 from openai import OpenAI
 import numpy as np
 from sklearn.model_selection import StratifiedKFold
 import csv
 from sklearn.metrics import roc_auc_score
-import Multi-Path_generation
 
-# --- Focal Loss Implementation ---
+
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):  # Alpha can now be a tensor
+    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
         super(FocalLoss, self).__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -27,6 +22,7 @@ class FocalLoss(nn.Module):
     def forward(self, inputs, targets):
         BCE_loss = F.cross_entropy(inputs, targets, reduction='none')
         pt = torch.exp(-BCE_loss)
+
         if self.alpha is not None:
             alpha_t = self.alpha[targets]
             F_loss = alpha_t * (1 - pt) ** self.gamma * BCE_loss
@@ -41,7 +37,6 @@ class FocalLoss(nn.Module):
             return F_loss
 
 
-
 class TrajectoryGatedClassifier_Transformer(nn.Module):
     def __init__(self, hidden_dim: int, num_heads=8, dropout_rate=0.4, num_transformer_layers=2, max_cot_len=64):
         super().__init__()
@@ -49,6 +44,7 @@ class TrajectoryGatedClassifier_Transformer(nn.Module):
         self.main_layernorm = nn.LayerNorm(hidden_dim)
         self.main_segment_embed = nn.Embedding(3, hidden_dim)
         self.main_position_embed = nn.Parameter(torch.zeros(3, hidden_dim))
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
             nhead=num_heads,
@@ -56,11 +52,13 @@ class TrajectoryGatedClassifier_Transformer(nn.Module):
             dropout=dropout_rate,
             batch_first=True
         )
+
         self.cot_transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
             num_layers=num_transformer_layers
         )
         self.cot_position_embed = nn.Parameter(torch.zeros(max_cot_len, hidden_dim))
+
         self.gate_network = nn.Sequential(
             nn.Linear(hidden_dim * 3, hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, 1), nn.Sigmoid()
@@ -72,6 +70,7 @@ class TrajectoryGatedClassifier_Transformer(nn.Module):
 
     def forward(self, x_dict):
         E1, E2_traj, E3, E4 = x_dict['E1'], x_dict['E2_trajectory'], x_dict['E3'], x_dict['E4']
+
         main_features = torch.stack([E1, E3, E4], dim=1)
         B, N, D = main_features.size()
         seg = self.main_segment_embed(torch.arange(N, device=device)).unsqueeze(0).expand(B, -1, -1)
@@ -81,12 +80,9 @@ class TrajectoryGatedClassifier_Transformer(nn.Module):
         main_representation = main_attn_out.reshape(B, -1)
 
         B_traj, S_traj, D_traj = E2_traj.size()
-
         pos_encoding = self.cot_position_embed[:S_traj, :].unsqueeze(0)
         E2_traj_with_pos = E2_traj + pos_encoding
-
         transformer_output = self.cot_transformer_encoder(E2_traj_with_pos)
-
         trajectory_rep = transformer_output.mean(dim=1)
         gate_value = self.gate_network(main_representation)
         gated_cot_rep = gate_value * trajectory_rep
@@ -95,11 +91,10 @@ class TrajectoryGatedClassifier_Transformer(nn.Module):
         return self.final_classifier(final_features)
 
 
-# --- Training ---
 def train():
-    model_path = "MODEL_PATH"
-    SAVED_DATASET_PATH = 'DATASET_PATH'
-    CSV_OUTPUT_PATH = 'OUTPUT_PATH'
+    model_path = "YOUR_MODEL_PATH"
+    SAVED_DATASET_PATH = 'YOUR_DATASET_PATH'
+    CSV_OUTPUT_PATH = 'YOUR_OUTPUT_PATH'
 
     if os.path.exists(SAVED_DATASET_PATH):
         print(f"Found saved dataset at '{SAVED_DATASET_PATH}'. Loading directly...")
@@ -112,11 +107,14 @@ def train():
             hidden_size = sample_features['E1'].shape[-1]
     else:
         print(f"No saved dataset found. Starting new data generation...")
+
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
-            print("Fatal: OpenAI API key not found.")
+            print("Fatal: API key (e.g., OPENAI_API_KEY) not found in environment variables.")
             return
-        openai_client = OpenAI(api_key=api_key, base_url="https://yunwu.ai/v1")
+
+        proxy_client = OpenAI(api_key=api_key, base_url="https://yunwu.ai/v1")
+
         print(f"Loading base model and tokenizer from local path: {model_path}...")
         try:
             llm_model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16,
@@ -128,25 +126,27 @@ def train():
             print(f"Failed to load model from {model_path}. Error: {e}");
             return
 
-        csv_path = "CSV_PATH"
+        csv_path = "YOUR_CSV_PATH"
         print(f"Loading questions from {csv_path}...")
         try:
             df = pd.read_csv(csv_path, encoding="latin1")
-            prompts = df['Question'].tolist()[:800]
+            prompts = df['Question'].tolist()[:2000]
         except Exception as e:
             print(f"Failed to load CSV: {e}");
             return
 
-        with open(CSV_OUTPUT_PATH, 'w', newline='', encoding='utf-8') as csvfile:
+        with open(CSV_OUTPUT_PATH, 'w', newline='', encoding='utf-16') as csvfile:
             csv_writer = csv.writer(csvfile)
-            csv_writer.writerow(['Question', 'AnswerA', 'AnswerB', 'Label'])
+            csv_writer.writerow(['Question', 'AnswerA', 'AnswerB', 'Label', 'ReversedQuestion'])
             print(f"Creating dataset and writing text data to {CSV_OUTPUT_PATH}...")
-            dataset = HallucinationDataset(prompts, llm_model, llm_tokenizer, openai_client, csv_writer)
+            dataset = HallucinationDataset(prompts, llm_model, llm_tokenizer, proxy_client, proxy_client, csv_writer)
 
         if len(dataset) > 0:
             print(f"Data generation complete. Saving dataset to '{SAVED_DATASET_PATH}'...")
             torch.save(dataset, SAVED_DATASET_PATH)
             print("Dataset saved successfully.")
+        else:
+            print("Data generation resulted in an empty dataset. Check API calls or consensus logic.")
 
         del llm_model
         torch.cuda.empty_cache()
@@ -161,7 +161,7 @@ def train():
     fold_acc_results, fold_auroc_results = [], []
 
     config = {
-        'learning_rate': 2e-5,
+        'learning_rate': 1e-5,
         'dropout_rate': 0.4,
         'focal_loss_gamma': 2.0,
         'batch_size': 8
@@ -178,6 +178,10 @@ def train():
             continue
 
         class_counts = np.bincount(train_labels, minlength=2)
+
+        if 0 in class_counts:
+            print(f"Warning: Fold {fold + 1} has a class with 0 samples. Skipping fold.")
+            continue
 
         total_samples = len(train_labels)
         num_classes = 2
@@ -196,16 +200,15 @@ def train():
         classifier_model = TrajectoryGatedClassifier_Transformer(
             hidden_dim=hidden_size,
             dropout_rate=config['dropout_rate'],
-            num_heads=8,
-            num_transformer_layers=2,
+            num_heads=4,
+            num_transformer_layers=1,
             max_cot_len=64
         ).to(device)
         optimizer = torch.optim.AdamW(classifier_model.parameters(), lr=config['learning_rate'], weight_decay=1e-4)
-
         loss_fn = FocalLoss(alpha=class_weights_tensor, gamma=config['focal_loss_gamma'])
-
         noise_level = 0.01
         accumulation_steps = 2
+
         for epoch in range(15):
             classifier_model.train()
             optimizer.zero_grad()
