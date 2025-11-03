@@ -1,4 +1,4 @@
-# HalluDet
+# Hallucination Detection via Internal States and Structured Reasoning Consistency in Large Language Models
 An unified Hallucination Detection Framework.
 
 [![preprint](https://img.shields.io/badge/preprint-available-brightgreen)](https://arxiv.org/abs/2510.11529)
