@@ -1,5 +1,6 @@
 # HalluDet
-An unified Hallucination Detection Framework
+An unified Hallucination Detection Framework.
+
 [![preprint](https://img.shields.io/badge/preprint-available-brightgreen)](https://arxiv.org/abs/2510.11529)
 
 ## Introduction
@@ -19,8 +20,13 @@ Install the required packages using: `pip install -r requirements.txt`
 
 ## Citation
 @article{song2025hallucination,
+
   title={Hallucination Detection via Internal States and Structured Reasoning Consistency in Large Language Models},
+  
   author={Song, Yusheng and Qiu, Lirong and Zhang, Xi and Tang, Zhihao},
+  
   journal={arXiv preprint arXiv:2510.11529},
+  
   year={2025}
+  
 }
