@@ -15,6 +15,8 @@ We introduce a framework to address the **Detection Dilemma** by aligning a mode
 2. **Segment-aware Temporalized Cross-Attention**  
    To address the *Representational Misalignment* issue, this module fuses embeddings from questions, answers, and structured CoT trajectories into a unified representational space, making heterogeneous signals compatible.
 
+![main-picture](main-picture.png)
+
 ## Requirements
 Install the required packages using: `pip install -r requirements.txt`
 
